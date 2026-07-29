@@ -34,7 +34,7 @@ for cmd in find diff rsync perl sort awk "${hash_cmd[0]}"; do
 done
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.07.28"
+readonly SCRIPT_VERSION="2026.07.29"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'
@@ -281,7 +281,8 @@ verify_backup() {
 calculate_hashes_impl() {
 	local start_s
 	start_s=$(date +%s)
-	find "$1" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|^([a-fA-F0-9]+)\s+[\* ]?\Q$1\E(.*)$|\2  \1|" | sort >"$2"
+	local target_path="$1"
+	find "$target_path" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|^([a-fA-F0-9]+)\s+[\* ]?\Q$target_path\E(.*)$|\2  \1|" | sort >"$2"
 	printf "\nCalculating $3 checksums completed in %d minute(s).\n" "$((($(date +%s) - start_s + 30) / 60))"
 }
 
