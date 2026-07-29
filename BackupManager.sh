@@ -54,7 +54,7 @@ get_mounted_backup_volumes() {
 	if [[ "$OSTYPE" == "darwin"* ]]; then
 		if [ -d "/Volumes" ]; then
 			local boot_volume
-			boot_volume=$(df / | tail -1 | awk '{print $NF}')
+			boot_volume=$(df -P / | awk 'NR==2 {print $6}')
 
 			for vol in /Volumes/*; do
 				if [ -d "$vol" ] && [ "$vol" != "$boot_volume" ]; then
@@ -160,9 +160,9 @@ atomic_refresh_storage() {
 
 	if [[ -d "$target" ]]; then
 		mkdir -- "$tmp" || return 1
-		rsync -a --whole-file -- "$target/" "$tmp/" || return 1
+		rsync -a --no-owner --no-group --whole-file -- "$target/" "$tmp/" || return 1
 	else
-		rsync -a --whole-file -- "$target" "$tmp" || return 1
+		rsync -a --no-owner --no-group --whole-file -- "$target" "$tmp" || return 1
 	fi
 
 	sync
@@ -281,7 +281,7 @@ verify_backup() {
 calculate_hashes_impl() {
 	local start_s
 	start_s=$(date +%s)
-	find "$1" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|\Q$1\E||" | sort -k 2 >"$2"
+	find "$1" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|^([a-fA-F0-9]+)\s+[\* ]?\Q$1\E(.*)$|\2  \1|" | sort >"$2"
 	printf "\nCalculating $3 checksums completed in %d minute(s).\n" "$((($(date +%s) - start_s + 30) / 60))"
 }
 
@@ -325,7 +325,7 @@ verify_backup_tree_impl() {
 		find "$target_dir" -type f \( "${FIND_FILTER[@]}" \) | perl -pe "s|^\Q$target_dir\E||" | sort >"${tmps[$i]}"
 		local file_count=0
 		local dir_count=0
-		file_count=$(find "$target_dir" -type f \( "${FIND_FILTER[@]}" \) | wc -l | tr -d ' ')
+		file_count=$(wc -l <"${tmps[$i]}" | tr -d ' ')
 		dir_count=$(find "$target_dir" -type d | tail -n +2 | wc -l | tr -d ' ')
 		printf "Disk %d (%s): %'d file(s), %'d folder(s)\n" "$i" "$disk" "$file_count" "$dir_count"
 	done
@@ -443,13 +443,13 @@ options=("Verify" "Verify Tree" "Refresh" "Exit")
 select opt in "${options[@]}"; do
 	case $opt in
 	"Verify")
-		verify_backup
+		verify_backup || true
 		;;
 	"Verify Tree")
-		verify_backup_tree
+		verify_backup_tree || true
 		;;
 	"Refresh")
-		refresh_backup
+		refresh_backup || true
 		;;
 	"Exit")
 		printf "\nBye.\n"
