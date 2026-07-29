@@ -29,7 +29,7 @@ else
 	hash_cmd=(shasum -a 256)
 fi
 
-for cmd in find diff rsync perl sort awk "${hash_cmd[0]}"; do
+for cmd in find diff rsync perl sort awk mount df mktemp wc tr grep sed date ps "${hash_cmd[0]}"; do
 	require "$cmd"
 done
 
@@ -45,6 +45,15 @@ readonly FIND_FILTER=(
 
 declare -a DISKS
 declare -a PATHS
+declare -a TEMP_FILES=()
+
+cleanup_temp_files() {
+	if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+		rm -f -- "${TEMP_FILES[@]}" 2>/dev/null || true
+	fi
+}
+
+trap cleanup_temp_files EXIT
 
 get_mounted_backup_volumes() {
 	local -n result_array=$1
@@ -54,11 +63,13 @@ get_mounted_backup_volumes() {
 	if [[ "$OSTYPE" == "darwin"* ]]; then
 		if [ -d "/Volumes" ]; then
 			local boot_volume
-			boot_volume=$(df -P / | awk 'NR==2 {print $6}')
+			boot_volume=$(df -P / | awk 'NR==2 {print $1}')
 
 			for vol in /Volumes/*; do
-				if [ -d "$vol" ] && [ "$vol" != "$boot_volume" ]; then
-					if mount | grep -Fq "on $vol "; then
+				if [ -d "$vol" ]; then
+					local vol_device
+					vol_device=$(df -P "$vol" | awk 'NR==2 {print $1}')
+					if [ "$vol_device" != "$boot_volume" ] && mount | grep -Fq "on $vol "; then
 						temp_list+=("$vol")
 					fi
 				fi
@@ -231,6 +242,7 @@ verify_backup() {
 
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
 			tmps[i]="$(mktemp)"
+			TEMP_FILES+=("${tmps[i]}")
 		done
 
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
@@ -318,6 +330,7 @@ verify_backup_tree_impl() {
 	declare -a tmps=()
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		tmps[i]="$(mktemp)"
+		TEMP_FILES+=("${tmps[i]}")
 	done
 
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
@@ -350,6 +363,16 @@ refresh_backup() {
 		echo "No path selected. Exiting storage refresh."
 		return 1
 	fi
+
+	local confirm
+	read -r -p "This will rewrite backup contents for '$path' on all disks. Continue? [y/N] " confirm
+	case "$confirm" in
+	[yY] | [yY][eE][sS]) ;;
+	*)
+		echo "Refresh cancelled."
+		return 1
+		;;
+	esac
 
 	local start_st
 	start_st=$(date +%s)
