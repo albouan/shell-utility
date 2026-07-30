@@ -14,6 +14,14 @@ A robust, multi-disk backup verification and maintenance utility designed for **
 
 ---
 
+## 💡 Interesting Use Cases
+
+*   **(Regular Computers) Peace of Mind via Cryptographic Verification:** Regular file copy confirmations only tell you if a transfer completed, not if the data degraded later. By running deep SHA-256 cross-checks against multiple independent backup disks, you get absolute certainty that your archives are bit-for-bit identical and entirely free of silent corruption.
+
+*   **(Raspberry Pi-Based Systems) Self-Sufficient Backup Management:** Ideal for headless, low-power storage nodes or local backup appliances running on Debian. It allows you to manually or automatically manage multi-disk integrity and combat bit rot using inexpensive, off-the-shelf USB enclosures and drives without needing complex enterprise software.
+
+---
+
 ## 📋 Requirements
 
 *   **Bash:** Version 5.0 or higher
