@@ -18,14 +18,48 @@ A robust, multi-disk backup verification and maintenance utility designed for **
 
 *   **(Regular Computers) Peace of Mind via Cryptographic Verification:** Regular file copy confirmations only tell you if a transfer completed, not if the data degraded later. By running deep SHA-256 cross-checks against multiple independent backup disks, you get absolute certainty that your archives are bit-for-bit identical and entirely free of silent corruption.
 
-*   **(Raspberry Pi-Based Systems) Self-Sufficient Backup Management:** Ideal for headless, low-power storage nodes or local backup appliances running on Debian. It allows you to manually or automatically manage multi-disk integrity and combat bit rot using inexpensive, off-the-shelf USB enclosures and drives without needing complex enterprise software.
+*   **(Raspberry Pi-Based Systems) Self-Sufficient Backup Management:** Ideal for headless, low-power storage nodes or local backup appliances running on Debian. It lets you manually manage multi-disk integrity and combat bit rot using inexpensive, off-the-shelf USB enclosures and drives without needing complex enterprise software. Note: the script's menus are interactive (`select`-based), so it requires a terminal session and is not currently suited to unattended/cron-driven automation.
+
+---
+
+## ▶️ Usage
+
+```sh
+chmod +x BackupManager.sh
+./BackupManager.sh
+```
+
+The script scans for mounted volumes, finds backup folders common to all of them, then presents a menu:
+
+*   **Verify** — Compares file trees across disks, then computes and cross-checks SHA-256 checksums for every file. Use this for a full integrity audit.
+*   **Verify Tree** — Compares file/folder listings across disks only (no checksums). Faster; use this for a quick structural sanity check.
+*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes.
+*   **Exit** — Quits the script.
 
 ---
 
 ## 📋 Requirements
 
 *   **Bash:** Version 5.0 or higher
-*   **Core Utilities:** `find`, `diff`, `rsync`, `perl`, `sort`, `awk`, and `sha256sum`/`shasum`
+*   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `mount`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
+*   **Additional dependencies (not always preinstalled, especially on minimal/Lite images):**
+    *   `rsync` — used for the atomic storage refresh
+    *   `perl` — used to normalize file paths during comparison
+    *   `shasum` (macOS) or `sha256sum` (Linux) — used for checksum verification
+
+---
+
+### ⚠️ Refresh Interruption & Recovery
+
+The **Refresh** operation rewrites backup contents by rsyncing to a sibling `<path>.refreshing` directory, then swapping it into place via `mv`. If the process is killed or the system loses power during the brief window between the two `mv` calls, `<path>` may momentarily not exist, leaving `<path>.old` (the original) and/or `<path>.refreshing` (the new copy) behind instead.
+
+This is **not silent data loss** — both copies remain on disk — but it does require manual recovery:
+
+1. Check for `<path>.old` and `<path>.refreshing` next to the expected backup path.
+2. If `<path>` is missing, restore it from `<path>.old` (the pre-refresh original) with `mv`.
+3. Once you've confirmed the recovered path is intact, remove the leftover `.old`/`.refreshing` directory.
+
+Always verify backups with **Verify** or **Verify Tree** after recovering from an interrupted refresh.
 
 ---
 

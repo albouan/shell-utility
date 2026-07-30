@@ -29,7 +29,7 @@ else
 	hash_cmd=(shasum -a 256)
 fi
 
-for cmd in find diff rsync perl sort awk mount df mktemp wc tr grep sed date ps "${hash_cmd[0]}"; do
+for cmd in find diff rsync perl sort awk mount df mktemp wc tr grep date "${hash_cmd[0]}"; do
 	require "$cmd"
 done
 
@@ -56,8 +56,8 @@ cleanup_temp_files() {
 trap cleanup_temp_files EXIT
 
 get_mounted_backup_volumes() {
-	local -n result_array=$1
-	result_array=()
+	local -n _result_array=$1
+	_result_array=()
 	local temp_list=()
 
 	if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -65,6 +65,7 @@ get_mounted_backup_volumes() {
 			local boot_volume
 			boot_volume=$(df -P / | awk 'NR==2 {print $1}')
 
+			local vol
 			for vol in /Volumes/*; do
 				if [ -d "$vol" ]; then
 					local vol_device
@@ -79,6 +80,7 @@ get_mounted_backup_volumes() {
 	elif [[ "$OSTYPE" == "linux"* ]]; then
 		local search_paths=("/media/$USER" "/run/media/$USER" "/mnt")
 
+		local base
 		for base in "${search_paths[@]}"; do
 			if [ -d "$base" ]; then
 				for vol in "$base"/*; do
@@ -93,8 +95,7 @@ get_mounted_backup_volumes() {
 	fi
 
 	if [ ${#temp_list[@]} -gt 0 ]; then
-		# shellcheck disable=SC2034
-		mapfile -t result_array < <(printf '%s\n' "${temp_list[@]}" | sort)
+		mapfile -t _result_array < <(printf '%s\n' "${temp_list[@]}" | sort)
 	fi
 }
 
@@ -112,6 +113,7 @@ get_common_top_level_items() {
 	declare -A item_counts
 	local valid_paths=0
 
+	local path
 	for path in "${paths[@]}"; do
 		if [ -d "$path" ]; then
 			valid_paths=$((valid_paths + 1))
@@ -122,6 +124,7 @@ get_common_top_level_items() {
 				[ -n "$basename" ] && path_items["$basename"]=1
 			done < <(find "$path" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
+			local item
 			for item in "${!path_items[@]}"; do
 				: "${item_counts["$item"]:=0}"
 				item_counts["$item"]=$((item_counts["$item"] + 1))
@@ -141,9 +144,7 @@ get_common_top_level_items() {
 	done
 
 	if [ ${#intersection_items[@]} -gt 0 ]; then
-		mapfile -t _common_result < <(
-			printf '%s\n' "${intersection_items[@]}" | sort
-		)
+		mapfile -t _common_result < <(printf '%s\n' "${intersection_items[@]}" | sort)
 	fi
 }
 
@@ -205,6 +206,8 @@ select_backup() {
 		return 0
 	fi
 
+	local PS3="Please select a backup: "
+
 	select opt in "${items[@]}"; do
 		if [ -n "$opt" ]; then
 			_result="$opt"
@@ -255,6 +258,7 @@ verify_backup() {
 
 		for ((i = 0; i < ${#pids[@]}; i++)); do
 			if ! wait "${pids[$i]}"; then
+				local pid
 				for pid in "${pids[@]}"; do
 					kill "$pid" 2>/dev/null || true
 				done
@@ -425,21 +429,8 @@ refresh_storage_impl() {
 }
 
 print_version() {
-	local shname=""
-	local shver=""
-	if [ -n "${BASH_VERSION:-}" ]; then
-		shname="bash"
-		shver="v${BASH_VERSION%%-*}"
-	elif [ -n "${ZSH_VERSION:-}" ]; then
-		shname="zsh"
-		shver="v${ZSH_VERSION}"
-	else
-		shname=$(ps -p $$ -o comm= 2>/dev/null | tail -n 1 | sed 's/^-//' | tr -d '\n')
-		if [ -z "$shname" ]; then
-			shname="sh"
-		fi
-		shver=$($shname --version 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i ~ /^[0-9]/){print "v"$i; exit}}' || echo "v?")
-	fi
+	local shname="bash"
+	local shver="v${BASH_VERSION%%-*}"
 	printf '%s v%s\nRunning on %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$shname" "$shver"
 }
 
