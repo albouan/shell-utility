@@ -34,7 +34,7 @@ for cmd in find diff rsync perl sort awk mount df mktemp wc tr grep sed date ps 
 done
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.07.29"
+readonly SCRIPT_VERSION="2026.07.30"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'
@@ -240,6 +240,8 @@ verify_backup() {
 		local -a pids=()
 		local -a tmps=()
 
+		local i
+
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
 			tmps[i]="$(mktemp)"
 			TEMP_FILES+=("${tmps[i]}")
@@ -269,7 +271,10 @@ verify_backup() {
 		for ((i = 1; i < ${#DISKS[@]}; i++)); do
 			local current_diff=""
 			current_diff="$(diff "${tmps[0]}" "${tmps[$i]}")" || true
-			hash_diffs+="$current_diff"
+			if [ -n "$current_diff" ]; then
+				[ -n "$hash_diffs" ] && hash_diffs+=$'\n'
+				hash_diffs+="$current_diff"
+			fi
 		done
 
 		rm -f -- "${tmps[@]}" || true
@@ -279,7 +284,7 @@ verify_backup() {
 			printf "\n\033[1;32m✅ VERIFICATION SUCCESSFUL.\033[0m\n"
 		else
 			local diff_count=0
-			diff_count="$(echo "$hash_diffs" | grep -c '^[<>].*' || true)"
+			diff_count="$(echo "$hash_diffs" | grep -c '^<' || true)"
 			printf "\n%'d file difference(s) found.\n" "$diff_count"
 			printf "\n\033[1;31m❌ VERIFICATION FAILED.\033[0m\n"
 		fi
@@ -295,7 +300,7 @@ calculate_hashes_impl() {
 	start_s=$(date +%s)
 	local target_path="$1"
 	find "$target_path" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|^([a-fA-F0-9]+)\s+[\* ]?\Q$target_path\E(.*)$|\2  \1|" | sort >"$2"
-	printf "\nCalculating $3 checksums completed in %d minute(s).\n" "$((($(date +%s) - start_s + 30) / 60))"
+	printf "\nCalculating %s checksums completed in %d minute(s).\n" "$3" "$((($(date +%s) - start_s + 30) / 60))"
 }
 
 verify_backup_tree() {
@@ -328,6 +333,9 @@ verify_backup_tree_impl() {
 	local path="$2"
 
 	declare -a tmps=()
+
+	local i
+
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		tmps[i]="$(mktemp)"
 		TEMP_FILES+=("${tmps[i]}")
@@ -348,7 +356,10 @@ verify_backup_tree_impl() {
 	for ((i = 1; i < ${#DISKS[@]}; i++)); do
 		local current_diff=""
 		current_diff="$(diff "${tmps[0]}" "${tmps[$i]}")" || true
-		file_tree_diffs+="$current_diff"
+		if [ -n "$current_diff" ]; then
+			[ -n "$file_tree_diffs" ] && file_tree_diffs+=$'\n'
+			file_tree_diffs+="$current_diff"
+		fi
 	done
 
 	_result="$file_tree_diffs"
@@ -379,6 +390,8 @@ refresh_backup() {
 
 	local -a pids=()
 
+	local i
+
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		local disk="${DISKS[$i]}"
 		refresh_storage_impl "$disk/$path" &
@@ -408,7 +421,7 @@ refresh_storage_impl() {
 		echo "Error: Failed to refresh storage for $1" >&2
 		return 1
 	}
-	printf "\nRefreshing $1 storage contents completed in %d minute(s).\n" "$((($(date +%s) - start_s + 30) / 60))"
+	printf "\nRefreshing %s storage contents completed in %d minute(s).\n" "$1" "$((($(date +%s) - start_s + 30) / 60))"
 }
 
 print_version() {
