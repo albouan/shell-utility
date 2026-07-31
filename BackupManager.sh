@@ -29,12 +29,12 @@ else
 	hash_cmd=(shasum -a 256)
 fi
 
-for cmd in find diff rsync perl sort awk mount df mktemp wc tr grep date "${hash_cmd[0]}"; do
+for cmd in find diff rsync perl sort awk du df mktemp wc tr grep date "${hash_cmd[0]}"; do
 	require "$cmd"
 done
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.07.30"
+readonly SCRIPT_VERSION="2026.07.31"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'
@@ -55,6 +55,30 @@ cleanup_temp_files() {
 
 trap cleanup_temp_files EXIT
 
+terminate_jobs() {
+	local pid
+	for pid in "$@"; do
+		kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+	done
+	wait 2>/dev/null || true
+}
+
+format_duration() {
+	local secs="$1"
+	if [ "$secs" -lt 60 ]; then
+		printf '%d second(s)' "$secs"
+	else
+		printf "%'d minute(s)" "$(((secs + 30) / 60))"
+	fi
+}
+
+is_mount_point() {
+	local dir="$1" dev parent_dev
+	dev=$(df -P "$dir" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+	parent_dev=$(df -P "$dir/.." 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+	[ -n "$dev" ] && [ "$dev" != "$parent_dev" ]
+}
+
 get_mounted_backup_volumes() {
 	local -n _result_array=$1
 	_result_array=()
@@ -70,7 +94,7 @@ get_mounted_backup_volumes() {
 				if [ -d "$vol" ]; then
 					local vol_device
 					vol_device=$(df -P "$vol" | awk 'NR==2 {print $1}')
-					if [ "$vol_device" != "$boot_volume" ] && mount | grep -Fq "on $vol "; then
+					if [ "$vol_device" != "$boot_volume" ] && is_mount_point "$vol"; then
 						temp_list+=("$vol")
 					fi
 				fi
@@ -85,7 +109,7 @@ get_mounted_backup_volumes() {
 			if [ -d "$base" ]; then
 				for vol in "$base"/*; do
 					if [ -d "$vol" ]; then
-						if mount | grep -Fq "on $vol "; then
+						if is_mount_point "$vol"; then
 							temp_list+=("$vol")
 						fi
 					fi
@@ -168,7 +192,20 @@ atomic_refresh_storage() {
 		return 1
 	fi
 
-	rm -rf -- "$tmp" "$old" || return 1
+	if [[ -e "$tmp" || -e "$old" ]]; then
+		echo "Error: Leftover '$tmp' and/or '$old' found next to '$target'." >&2
+		echo "This may be a recovery copy from an interrupted refresh, or an unrelated path." >&2
+		echo "Inspect it, restore/remove manually, then retry." >&2
+		return 1
+	fi
+
+	local need_kb avail_kb
+	need_kb=$(du -sk -- "$target" 2>/dev/null | awk 'END {print $1}') || need_kb=""
+	avail_kb=$(df -Pk -- "${target%/*}" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
+	if [[ -n "$need_kb" && -n "$avail_kb" ]] && ((avail_kb < need_kb)); then
+		printf "Error: '%s' needs ~%'d KB free, but only %'d KB is available.\n" "$target" "$need_kb" "$avail_kb" >&2
+		return 1
+	fi
 
 	if [[ -d "$target" ]]; then
 		mkdir -- "$tmp" || return 1
@@ -188,7 +225,9 @@ atomic_refresh_storage() {
 
 	sync
 
-	rm -rf -- "$old"
+	if ! rm -rf -- "$old"; then
+		echo "Warning: refresh of '$target' succeeded, but removing old copy '$old' failed; remove it manually." >&2
+	fi
 }
 
 select_backup() {
@@ -250,18 +289,17 @@ verify_backup() {
 			TEMP_FILES+=("${tmps[i]}")
 		done
 
+		set -m
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
 			local disk="${DISKS[$i]}"
-			calculate_hashes_impl "$disk/$path" "${tmps[$i]}" "$disk" &
+			calculate_hashes_impl "$disk/$path" "${tmps[$i]}" "$disk" </dev/null &
 			pids+=("$!")
 		done
+		set +m
 
 		for ((i = 0; i < ${#pids[@]}; i++)); do
 			if ! wait "${pids[$i]}"; then
-				local pid
-				for pid in "${pids[@]}"; do
-					kill "$pid" 2>/dev/null || true
-				done
+				terminate_jobs "${pids[@]}"
 
 				echo "Error: Checksum calculation failed in one or more disks." >&2
 
@@ -271,25 +309,45 @@ verify_backup() {
 			fi
 		done
 
+		for ((i = 0; i < ${#DISKS[@]}; i++)); do
+			if [ ! -s "${tmps[$i]}" ]; then
+				echo "Error: Checksum list for ${DISKS[$i]} is empty; refusing to report success." >&2
+				rm -f -- "${tmps[@]}" || true
+				return 1
+			fi
+		done
+
 		local hash_diffs=""
+		local -A affected_files=()
+
 		for ((i = 1; i < ${#DISKS[@]}; i++)); do
 			local current_diff=""
 			current_diff="$(diff "${tmps[0]}" "${tmps[$i]}")" || true
 			if [ -n "$current_diff" ]; then
 				[ -n "$hash_diffs" ] && hash_diffs+=$'\n'
 				hash_diffs+="$current_diff"
+
+				local line rel
+				while IFS= read -r line; do
+					case "$line" in
+					'< '* | '> '*) ;;
+					*) continue ;;
+					esac
+					rel="${line:2}"
+					rel="${rel%  *}"
+					[ -n "$rel" ] || continue
+					affected_files["$rel"]=1
+				done <<<"$current_diff"
 			fi
 		done
 
 		rm -f -- "${tmps[@]}" || true
 
 		if [ -z "$hash_diffs" ]; then
-			printf "\nBackup verification completed successfully in %d minute(s).\n" "$((($(date +%s) - start_st + 30) / 60))"
+			printf "\nBackup verification completed successfully in %s.\n" "$(format_duration "$(($(date +%s) - start_st))")"
 			printf "\n\033[1;32m✅ VERIFICATION SUCCESSFUL.\033[0m\n"
 		else
-			local diff_count=0
-			diff_count="$(echo "$hash_diffs" | grep -c '^<' || true)"
-			printf "\n%'d file difference(s) found.\n" "$diff_count"
+			printf "\n%'d file(s) affected by checksum mismatches or missing copies." "${#affected_files[@]}"
 			printf "\n\033[1;31m❌ VERIFICATION FAILED.\033[0m\n"
 		fi
 	else
@@ -303,8 +361,20 @@ calculate_hashes_impl() {
 	local start_s
 	start_s=$(date +%s)
 	local target_path="$1"
-	find "$target_path" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + | perl -pe "s|^([a-fA-F0-9]+)\s+[\* ]?\Q$target_path\E(.*)$|\2  \1|" | sort >"$2"
-	printf "\nCalculating %s checksums completed in %d minute(s).\n" "$3" "$((($(date +%s) - start_s + 30) / 60))"
+
+	if ! find "$target_path" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + |
+		BM_TARGET="$target_path" perl -pe 's|^([a-fA-F0-9]+)\s+[\* ]?\Q$ENV{BM_TARGET}\E(.*)$|$2  $1|' |
+		sort >"$2"; then
+		echo "Error: Failed to calculate checksums for '$target_path'." >&2
+		return 1
+	fi
+
+	if grep -qv '^/' "$2"; then
+		echo "Error: Unexpected checksum line for '$target_path' (filename with an embedded newline?)." >&2
+		return 1
+	fi
+
+	printf "\nCalculating %s checksums completed in %s.\n" "$3" "$(format_duration "$(($(date +%s) - start_s))")"
 }
 
 verify_backup_tree() {
@@ -345,28 +415,57 @@ verify_backup_tree_impl() {
 		TEMP_FILES+=("${tmps[i]}")
 	done
 
+	local total_files=0
+
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		local disk="${DISKS[$i]}"
 		local target_dir="$disk/$path"
-		find "$target_dir" -type f \( "${FIND_FILTER[@]}" \) | perl -pe "s|^\Q$target_dir\E||" | sort >"${tmps[$i]}"
+
+		if ! find "$target_dir" -type f \( "${FIND_FILTER[@]}" \) |
+			BM_TARGET="$target_dir" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
+			sort >"${tmps[$i]}"; then
+			echo "Error: Failed to list files under '$target_dir'." >&2
+			rm -f -- "${tmps[@]}" || true
+			return 1
+		fi
+
+		if grep -qv '^/' "${tmps[$i]}"; then
+			echo "Error: Unexpected entry listing '$target_dir' (filename with an embedded newline?)." >&2
+			rm -f -- "${tmps[@]}" || true
+			return 1
+		fi
+
 		local file_count=0
 		local dir_count=0
 		file_count=$(wc -l <"${tmps[$i]}" | tr -d ' ')
-		dir_count=$(find "$target_dir" -type d | tail -n +2 | wc -l | tr -d ' ')
+
+		if ! dir_count=$(find "$target_dir" -mindepth 1 -type d \( "${FIND_FILTER[@]}" \) | wc -l | tr -d ' '); then
+			echo "Error: Failed to count folders under '$target_dir'." >&2
+			rm -f -- "${tmps[@]}" || true
+			return 1
+		fi
+
+		total_files=$((total_files + file_count))
 		printf "Disk %d (%s): %'d file(s), %'d folder(s)\n" "$i" "$disk" "$file_count" "$dir_count"
 	done
 
-	local file_tree_diffs=""
+	if [ "$total_files" -eq 0 ]; then
+		echo "Error: No files found under '$path' on any disk; nothing to verify." >&2
+		rm -f -- "${tmps[@]}" || true
+		return 1
+	fi
+
+	local file_diffs=""
 	for ((i = 1; i < ${#DISKS[@]}; i++)); do
 		local current_diff=""
 		current_diff="$(diff "${tmps[0]}" "${tmps[$i]}")" || true
 		if [ -n "$current_diff" ]; then
-			[ -n "$file_tree_diffs" ] && file_tree_diffs+=$'\n'
-			file_tree_diffs+="$current_diff"
+			[ -n "$file_diffs" ] && file_diffs+=$'\n'
+			file_diffs+="$current_diff"
 		fi
 	done
 
-	_result="$file_tree_diffs"
+	_result="$file_diffs"
 
 	rm -f -- "${tmps[@]}" || true
 }
@@ -396,24 +495,24 @@ refresh_backup() {
 
 	local i
 
+	set -m
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		local disk="${DISKS[$i]}"
-		refresh_storage_impl "$disk/$path" &
+		refresh_storage_impl "$disk/$path" </dev/null &
 		pids+=("$!")
 	done
+	set +m
 
 	for ((i = 0; i < ${#pids[@]}; i++)); do
 		if ! wait "${pids[$i]}"; then
-			for pid in "${pids[@]}"; do
-				kill "$pid" 2>/dev/null || true
-			done
+			terminate_jobs "${pids[@]}"
 
 			echo "Error: Storage refresh failed in one or more disks." >&2
 			return 1
 		fi
 	done
 
-	printf "\n\033[1;32m✅ Success: Refreshing storage contents completed successfully in %d minute(s).\033[0m\n" "$((($(date +%s) - start_st + 30) / 60))"
+	printf "\n\033[1;32m✅ Success: Refreshing storage contents completed successfully in %s.\033[0m\n" "$(format_duration "$(($(date +%s) - start_st))")"
 
 	printf "\n"
 }
@@ -425,7 +524,7 @@ refresh_storage_impl() {
 		echo "Error: Failed to refresh storage for $1" >&2
 		return 1
 	}
-	printf "\nRefreshing %s storage contents completed in %d minute(s).\n" "$1" "$((($(date +%s) - start_s + 30) / 60))"
+	printf "\nRefreshing %s storage contents completed in %s.\n" "$1" "$(format_duration "$(($(date +%s) - start_s))")"
 }
 
 print_version() {
@@ -469,7 +568,7 @@ PS3="Please select an option: "
 options=("Verify" "Verify Tree" "Refresh" "Exit")
 
 select opt in "${options[@]}"; do
-	case $opt in
+	case "$opt" in
 	"Verify")
 		verify_backup || true
 		;;

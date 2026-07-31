@@ -33,15 +33,17 @@ The script scans for mounted volumes, finds backup folders common to all of them
 
 *   **Verify** — Compares file trees across disks, then computes and cross-checks SHA-256 checksums for every file. Use this for a full integrity audit.
 *   **Verify Tree** — Compares file/folder listings across disks only (no checksums). Faster; use this for a quick structural sanity check.
-*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes.
+*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes. Requires free space equal to the size of the backup, since the new copy is written alongside the original before being swapped in; the operation refuses to start if the volume is too full.
 *   **Exit** — Quits the script.
+
+> **Run Verify before Refresh.** Refresh rewrites whatever bits it reads — it does not repair anything. Auditing first means you find any corruption while you still have a known-good copy on another disk to restore from.
 
 ---
 
 ## 📋 Requirements
 
 *   **Bash:** Version 5.0 or higher
-*   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `mount`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
+*   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `du`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
 *   **Additional dependencies (not always preinstalled, especially on minimal/Lite images):**
     *   `rsync` — used for the atomic storage refresh
     *   `perl` — used to normalize file paths during comparison
