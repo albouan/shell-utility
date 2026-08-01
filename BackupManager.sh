@@ -63,6 +63,8 @@ declare -a DISKS
 declare -a PATHS
 declare -a TEMP_FILES=()
 declare -A LEFTOVER_NAMES=()
+declare -a RUNNING_PIDS=()
+INTERRUPT_NOTE=""
 
 cleanup_temp_files() {
 	if [ ${#TEMP_FILES[@]} -gt 0 ]; then
@@ -78,6 +80,38 @@ terminate_jobs() {
 		kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
 	done
 	wait 2>/dev/null || true
+}
+
+on_interrupt() {
+	local sig="$1" signum="$2"
+
+	trap - INT TERM
+
+	printf "\n\033[1;33m⚠ Interrupted (SIG%s); stopping jobs on all disks...\033[0m\n" "$sig" >&2
+
+	if [ ${#RUNNING_PIDS[@]} -gt 0 ]; then
+		terminate_jobs "${RUNNING_PIDS[@]}"
+		RUNNING_PIDS=()
+	fi
+
+	if [ -n "$INTERRUPT_NOTE" ]; then
+		printf '%s\n' "$INTERRUPT_NOTE" >&2
+	fi
+
+	exit $((128 + signum))
+}
+
+arm_interrupt_trap() {
+	INTERRUPT_NOTE="${1:-}"
+	RUNNING_PIDS=()
+	trap 'on_interrupt INT 2' INT
+	trap 'on_interrupt TERM 15' TERM
+}
+
+disarm_interrupt_trap() {
+	trap - INT TERM
+	RUNNING_PIDS=()
+	INTERRUPT_NOTE=""
 }
 
 format_duration() {
@@ -327,12 +361,20 @@ atomic_refresh_storage() {
 
 	sync
 
-	mv -- "$target" "$old" || return 1
+	trap '' INT TERM
+
+	mv -- "$target" "$old" || {
+		trap - INT TERM
+		return 1
+	}
 
 	mv -- "$tmp" "$target" || {
 		mv -- "$old" "$target"
+		trap - INT TERM
 		return 1
 	}
+
+	trap - INT TERM
 
 	sync
 
@@ -439,7 +481,6 @@ verify_backup() {
 		local start_st
 		start_st=$(date +%s)
 
-		local -a pids=()
 		local -a tmps=()
 
 		local i
@@ -449,17 +490,20 @@ verify_backup() {
 			TEMP_FILES+=("${tmps[i]}")
 		done
 
+		arm_interrupt_trap
+
 		set -m
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
 			local disk="${DISKS[$i]}"
 			calculate_hashes_impl "$disk/$path" "${tmps[$i]}" "$disk" </dev/null &
-			pids+=("$!")
+			RUNNING_PIDS+=("$!")
 		done
 		set +m
 
-		for ((i = 0; i < ${#pids[@]}; i++)); do
-			if ! wait "${pids[$i]}"; then
-				terminate_jobs "${pids[@]}"
+		for ((i = 0; i < ${#RUNNING_PIDS[@]}; i++)); do
+			if ! wait "${RUNNING_PIDS[$i]}"; then
+				terminate_jobs "${RUNNING_PIDS[@]}"
+				disarm_interrupt_trap
 
 				echo "Error: Checksum calculation failed in one or more disks." >&2
 
@@ -468,6 +512,8 @@ verify_backup() {
 				return 1
 			fi
 		done
+
+		disarm_interrupt_trap
 
 		for ((i = 0; i < ${#DISKS[@]}; i++)); do
 			if [ ! -s "${tmps[$i]}" ]; then
@@ -697,26 +743,29 @@ refresh_backup() {
 	local start_st
 	start_st=$(date +%s)
 
-	local -a pids=()
-
 	local i
+
+	arm_interrupt_trap "Refresh stopped part-way. Disks may hold leftover '.refreshing' or '.old' copies; re-run this script for the recovery report."
 
 	set -m
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		local disk="${DISKS[$i]}"
 		refresh_storage_impl "$disk/$path" </dev/null &
-		pids+=("$!")
+		RUNNING_PIDS+=("$!")
 	done
 	set +m
 
-	for ((i = 0; i < ${#pids[@]}; i++)); do
-		if ! wait "${pids[$i]}"; then
-			terminate_jobs "${pids[@]}"
+	for ((i = 0; i < ${#RUNNING_PIDS[@]}; i++)); do
+		if ! wait "${RUNNING_PIDS[$i]}"; then
+			terminate_jobs "${RUNNING_PIDS[@]}"
+			disarm_interrupt_trap
 
 			echo "Error: Storage refresh failed in one or more disks." >&2
 			return 1
 		fi
 	done
+
+	disarm_interrupt_trap
 
 	printf "\n\033[1;32m✅ Success: Refreshing storage contents completed successfully in %s.\033[0m\n" "$(format_duration "$(($(date +%s) - start_st))")"
 
