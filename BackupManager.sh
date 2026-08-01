@@ -263,6 +263,7 @@ scan_interrupted_refreshes() {
 			base="${item%"$suffix"}"
 			bases["$base"]=1
 			LEFTOVER_NAMES["${item##*/}"]=1
+			LEFTOVER_NAMES["${base##*/}"]=1
 		done
 	done
 
