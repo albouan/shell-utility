@@ -34,7 +34,7 @@ for cmd in find diff rsync perl sort awk du df mktemp wc tr grep date "${hash_cm
 done
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.07.31"
+readonly SCRIPT_VERSION="2026.08.01"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'
@@ -347,7 +347,13 @@ verify_backup() {
 			printf "\nBackup verification completed successfully in %s.\n" "$(format_duration "$(($(date +%s) - start_st))")"
 			printf "\n\033[1;32m✅ VERIFICATION SUCCESSFUL.\033[0m\n"
 		else
-			printf "\n%'d file(s) affected by checksum mismatches or missing copies." "${#affected_files[@]}"
+			printf "\n\033[1;31m❌ Discrepancies found in checksum comparison(s):\033[0m\n"
+			if [ ${#affected_files[@]} -gt 0 ]; then
+				printf '%s\n' "${!affected_files[@]}" | sort
+				printf "\n%'d file(s) affected by checksum mismatches or missing copies.\n" "${#affected_files[@]}"
+			else
+				printf '%s\n' "$hash_diffs"
+			fi
 			printf "\n\033[1;31m❌ VERIFICATION FAILED.\033[0m\n"
 		fi
 	else
@@ -407,12 +413,15 @@ verify_backup_tree_impl() {
 	local path="$2"
 
 	declare -a tmps=()
+	declare -a dir_tmps=()
 
 	local i
 
 	for ((i = 0; i < ${#DISKS[@]}; i++)); do
 		tmps[i]="$(mktemp)"
 		TEMP_FILES+=("${tmps[i]}")
+		dir_tmps[i]="$(mktemp)"
+		TEMP_FILES+=("${dir_tmps[i]}")
 	done
 
 	local total_files=0
@@ -425,25 +434,28 @@ verify_backup_tree_impl() {
 			BM_TARGET="$target_dir" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
 			sort >"${tmps[$i]}"; then
 			echo "Error: Failed to list files under '$target_dir'." >&2
-			rm -f -- "${tmps[@]}" || true
+			rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
 			return 1
 		fi
 
-		if grep -qv '^/' "${tmps[$i]}"; then
+		if ! find "$target_dir" -mindepth 1 -type d \( "${FIND_FILTER[@]}" \) |
+			BM_TARGET="$target_dir" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
+			sort >"${dir_tmps[$i]}"; then
+			echo "Error: Failed to list folders under '$target_dir'." >&2
+			rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
+			return 1
+		fi
+
+		if grep -qv '^/' "${tmps[$i]}" || grep -qv '^/' "${dir_tmps[$i]}"; then
 			echo "Error: Unexpected entry listing '$target_dir' (filename with an embedded newline?)." >&2
-			rm -f -- "${tmps[@]}" || true
+			rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
 			return 1
 		fi
 
 		local file_count=0
 		local dir_count=0
 		file_count=$(wc -l <"${tmps[$i]}" | tr -d ' ')
-
-		if ! dir_count=$(find "$target_dir" -mindepth 1 -type d \( "${FIND_FILTER[@]}" \) | wc -l | tr -d ' '); then
-			echo "Error: Failed to count folders under '$target_dir'." >&2
-			rm -f -- "${tmps[@]}" || true
-			return 1
-		fi
+		dir_count=$(wc -l <"${dir_tmps[$i]}" | tr -d ' ')
 
 		total_files=$((total_files + file_count))
 		printf "Disk %d (%s): %'d file(s), %'d folder(s)\n" "$i" "$disk" "$file_count" "$dir_count"
@@ -451,23 +463,30 @@ verify_backup_tree_impl() {
 
 	if [ "$total_files" -eq 0 ]; then
 		echo "Error: No files found under '$path' on any disk; nothing to verify." >&2
-		rm -f -- "${tmps[@]}" || true
+		rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
 		return 1
 	fi
 
 	local file_diffs=""
 	for ((i = 1; i < ${#DISKS[@]}; i++)); do
 		local current_diff=""
+
 		current_diff="$(diff "${tmps[0]}" "${tmps[$i]}")" || true
 		if [ -n "$current_diff" ]; then
 			[ -n "$file_diffs" ] && file_diffs+=$'\n'
-			file_diffs+="$current_diff"
+			file_diffs+="Disk 0 vs Disk $i (file(s)):"$'\n'"$current_diff"
+		fi
+
+		current_diff="$(diff "${dir_tmps[0]}" "${dir_tmps[$i]}")" || true
+		if [ -n "$current_diff" ]; then
+			[ -n "$file_diffs" ] && file_diffs+=$'\n'
+			file_diffs+="Disk 0 vs Disk $i (folder(s)):"$'\n'"$current_diff"
 		fi
 	done
 
 	_result="$file_diffs"
 
-	rm -f -- "${tmps[@]}" || true
+	rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
 }
 
 refresh_backup() {
