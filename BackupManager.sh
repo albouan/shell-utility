@@ -33,6 +33,22 @@ for cmd in find diff rsync perl sort awk du df mktemp wc tr grep date "${hash_cm
 	require "$cmd"
 done
 
+declare -a RSYNC_META=()
+RSYNC_META_WARNING=""
+
+rsync_help="$(rsync --help 2>&1 || true)"
+if [[ "$rsync_help" == *--xattrs* ]]; then
+	RSYNC_META=(--xattrs)
+	[[ "$rsync_help" == *--acls* ]] && RSYNC_META+=(--acls)
+elif [[ "$rsync_help" == *--extended-attributes* ]]; then
+	RSYNC_META=(--extended-attributes)
+else
+	RSYNC_META_WARNING="Warning: this rsync supports neither --xattrs nor --extended-attributes."$'\n'"Refresh will discard extended attributes, Finder tags, and ACLs."
+fi
+unset rsync_help
+
+readonly RSYNC_META_WARNING
+
 readonly SCRIPT_NAME="Backup Manager"
 readonly SCRIPT_VERSION="2026.08.01"
 
@@ -46,6 +62,7 @@ readonly FIND_FILTER=(
 declare -a DISKS
 declare -a PATHS
 declare -a TEMP_FILES=()
+declare -A LEFTOVER_NAMES=()
 
 cleanup_temp_files() {
 	if [ ${#TEMP_FILES[@]} -gt 0 ]; then
@@ -69,6 +86,15 @@ format_duration() {
 		printf '%d second(s)' "$secs"
 	else
 		printf "%'d minute(s)" "$(((secs + 30) / 60))"
+	fi
+}
+
+strip_prefix_for() {
+	local target="$1"
+	if [ -d "$target" ]; then
+		printf '%s' "$target"
+	else
+		printf '%s' "${target%/*}"
 	fi
 }
 
@@ -182,20 +208,104 @@ remove_dot_items_inplace() {
 	arr=("${output[@]}")
 }
 
+path_state() {
+	if [ -e "$1" ]; then printf '%s' "$2"; else printf '%s' "$3"; fi
+}
+
+suggest_refresh_recovery() {
+	local base="$1"
+	local has_old=0 has_new=0
+
+	[ -e "$base.old" ] && has_old=1
+	[ -e "$base.refreshing" ] && has_new=1
+
+	if [ -e "$base" ]; then
+		if [ "$has_old" -eq 1 ] && [ "$has_new" -eq 1 ]; then
+			printf "Ambiguous. Verify '%s' first, then remove whichever leftovers it makes redundant." "$base"
+		elif [ "$has_old" -eq 1 ]; then
+			printf "Refresh completed; verify '%s', then: rm -rf %q" "$base" "$base.old"
+		else
+			printf "Refresh died before the swap; '%s' is the untouched original, then: rm -rf %q" "$base" "$base.refreshing"
+		fi
+	else
+		if [ "$has_old" -eq 1 ]; then
+			printf "Restore the pre-refresh original: mv %q %q" "$base.old" "$base"
+		else
+			printf "Only the new copy survives; inspect it, then: mv %q %q" "$base.refreshing" "$base"
+		fi
+	fi
+}
+
+print_refresh_leftover_report() {
+	local base
+	for base in "$@"; do
+		printf "\n  %s\n" "$base"
+		printf "    %-14s %s\n" "itself:" "$(path_state "$base" "present" "MISSING")"
+		printf "    %-14s %s\n" ".old:" "$(path_state "$base.old" "present" "absent")"
+		printf "    %-14s %s\n" ".refreshing:" "$(path_state "$base.refreshing" "present" "absent")"
+		printf "    → %s\n" "$(suggest_refresh_recovery "$base")"
+	done
+}
+
+scan_interrupted_refreshes() {
+	local -A bases=()
+	local disk item suffix base
+
+	for disk in "${DISKS[@]}"; do
+		for item in "$disk"/*.refreshing "$disk"/*.old; do
+			[ -e "$item" ] || continue
+
+			case "$item" in
+			*.refreshing) suffix=".refreshing" ;;
+			*) suffix=".old" ;;
+			esac
+
+			base="${item%"$suffix"}"
+			bases["$base"]=1
+			LEFTOVER_NAMES["${item##*/}"]=1
+		done
+	done
+
+	if [ ${#bases[@]} -eq 0 ]; then
+		return 0
+	fi
+
+	local -a sorted_bases=()
+	mapfile -t sorted_bases < <(printf '%s\n' "${!bases[@]}" | sort)
+
+	printf "\033[1;33m⚠ Possible interrupted refresh: %d path(s) with leftover copies.\033[0m\n" "${#sorted_bases[@]}"
+	printf "These may be recovery copies from an interrupted refresh, or unrelated paths.\n"
+	printf "They are withheld from the backup menu until resolved.\n"
+
+	print_refresh_leftover_report "${sorted_bases[@]}"
+
+	printf "\nInspect before acting. Run Verify or Verify Tree afterwards to confirm the result.\n\n"
+}
+
+remove_leftover_items_inplace() {
+	local -n _items="$1"
+	local output=()
+	local item
+	for item in "${_items[@]}"; do
+		[ -n "${LEFTOVER_NAMES["$item"]:-}" ] || output+=("$item")
+	done
+	_items=("${output[@]}")
+}
+
 atomic_refresh_storage() {
 	local target="$1"
 	local tmp="${target}.refreshing"
 	local old="${target}.old"
 
-	if [[ ! -e "$target" ]]; then
-		echo "Error: '$target' does not exist." >&2
-		return 1
-	fi
-
 	if [[ -e "$tmp" || -e "$old" ]]; then
 		echo "Error: Leftover '$tmp' and/or '$old' found next to '$target'." >&2
 		echo "This may be a recovery copy from an interrupted refresh, or an unrelated path." >&2
-		echo "Inspect it, restore/remove manually, then retry." >&2
+		print_refresh_leftover_report "$target" >&2
+		return 1
+	fi
+
+	if [[ ! -e "$target" ]]; then
+		echo "Error: '$target' does not exist." >&2
 		return 1
 	fi
 
@@ -209,9 +319,9 @@ atomic_refresh_storage() {
 
 	if [[ -d "$target" ]]; then
 		mkdir -- "$tmp" || return 1
-		rsync -a --no-owner --no-group --whole-file -- "$target/" "$tmp/" || return 1
+		rsync -a "${RSYNC_META[@]}" --no-owner --no-group --whole-file -- "$target/" "$tmp/" || return 1
 	else
-		rsync -a --no-owner --no-group --whole-file -- "$target" "$tmp" || return 1
+		rsync -a "${RSYNC_META[@]}" --no-owner --no-group --whole-file -- "$target" "$tmp" || return 1
 	fi
 
 	sync
@@ -255,6 +365,55 @@ select_backup() {
 			echo "Invalid selection. Please try again."
 		fi
 	done
+}
+
+report_hash_mismatches() {
+	local cand_file="$1"
+	shift
+
+	awk -v nd="$#" '
+		FNR == 1 { fidx++ }
+		fidx == 1 { cand[$0] = 1; next }
+		{
+			hash = $NF
+			rel = substr($0, 1, length($0) - length(hash) - 2)
+			if (rel in cand) {
+				h[rel, fidx - 2] = hash
+				seen[rel] = 1
+			}
+		}
+		END {
+			for (rel in seen) {
+				split("", val)
+				split("", cnt)
+				for (d = 0; d < nd; d++) {
+					val[d] = ((rel SUBSEP d) in h) ? h[rel, d] : "MISSING"
+					cnt[val[d]]++
+				}
+
+				best = ""; bestn = 0; tie = 0
+				for (v in cnt) {
+					if (cnt[v] > bestn) { bestn = cnt[v]; best = v; tie = 0 }
+					else if (cnt[v] == bestn) { tie = 1 }
+				}
+
+				line = rel
+				bad = ""
+				for (d = 0; d < nd; d++) {
+					line = line sprintf("  disk%d=%s", d,
+						(val[d] == "MISSING") ? "MISSING" : substr(val[d], 1, 10))
+					if (!tie && val[d] != best) {
+						bad = bad (bad == "" ? "" : ",") sprintf("disk%d", d)
+					}
+				}
+
+				if (tie) verdict = "no majority - cannot tell which disk is wrong"
+				else verdict = "suspect: " bad
+
+				printf "%s  [%s]\n", line, verdict
+			}
+		}
+	' "$cand_file" "$@" | sort
 }
 
 verify_backup() {
@@ -341,19 +500,36 @@ verify_backup() {
 			fi
 		done
 
-		rm -f -- "${tmps[@]}" || true
-
 		if [ -z "$hash_diffs" ]; then
+			rm -f -- "${tmps[@]}" || true
+
 			printf "\nBackup verification completed successfully in %s.\n" "$(format_duration "$(($(date +%s) - start_st))")"
 			printf "\n\033[1;32m✅ VERIFICATION SUCCESSFUL.\033[0m\n"
 		else
-			printf "\n\033[1;31m❌ Discrepancies found in checksum comparison(s):\033[0m\n"
+			printf "\n\033[1;31m❌ Discrepancies found in checksum comparison(s):\033[0m\n\n"
+
 			if [ ${#affected_files[@]} -gt 0 ]; then
-				printf '%s\n' "${!affected_files[@]}" | sort
+				for ((i = 0; i < ${#DISKS[@]}; i++)); do
+					printf "  disk%d = %s\n" "$i" "${DISKS[$i]}"
+				done
+				printf "\n"
+
+				local cand_file
+				cand_file="$(mktemp)"
+				TEMP_FILES+=("$cand_file")
+				printf '%s\n' "${!affected_files[@]}" >"$cand_file"
+
+				report_hash_mismatches "$cand_file" "${tmps[@]}"
+
+				rm -f -- "$cand_file" || true
+
 				printf "\n%'d file(s) affected by checksum mismatches or missing copies.\n" "${#affected_files[@]}"
 			else
 				printf '%s\n' "$hash_diffs"
 			fi
+
+			rm -f -- "${tmps[@]}" || true
+
 			printf "\n\033[1;31m❌ VERIFICATION FAILED.\033[0m\n"
 		fi
 	else
@@ -368,8 +544,11 @@ calculate_hashes_impl() {
 	start_s=$(date +%s)
 	local target_path="$1"
 
+	local strip_prefix
+	strip_prefix="$(strip_prefix_for "$target_path")"
+
 	if ! find "$target_path" -type f \( "${FIND_FILTER[@]}" \) -exec "${hash_cmd[@]}" {} + |
-		BM_TARGET="$target_path" perl -pe 's|^([a-fA-F0-9]+)\s+[\* ]?\Q$ENV{BM_TARGET}\E(.*)$|$2  $1|' |
+		BM_TARGET="$strip_prefix" perl -pe 's|^([a-fA-F0-9]+)\s+[\* ]?\Q$ENV{BM_TARGET}\E(.*)$|$2  $1|' |
 		sort >"$2"; then
 		echo "Error: Failed to calculate checksums for '$target_path'." >&2
 		return 1
@@ -430,8 +609,11 @@ verify_backup_tree_impl() {
 		local disk="${DISKS[$i]}"
 		local target_dir="$disk/$path"
 
+		local strip_prefix
+		strip_prefix="$(strip_prefix_for "$target_dir")"
+
 		if ! find "$target_dir" -type f \( "${FIND_FILTER[@]}" \) |
-			BM_TARGET="$target_dir" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
+			BM_TARGET="$strip_prefix" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
 			sort >"${tmps[$i]}"; then
 			echo "Error: Failed to list files under '$target_dir'." >&2
 			rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
@@ -439,7 +621,7 @@ verify_backup_tree_impl() {
 		fi
 
 		if ! find "$target_dir" -mindepth 1 -type d \( "${FIND_FILTER[@]}" \) |
-			BM_TARGET="$target_dir" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
+			BM_TARGET="$strip_prefix" perl -pe 's|^\Q$ENV{BM_TARGET}\E||' |
 			sort >"${dir_tmps[$i]}"; then
 			echo "Error: Failed to list folders under '$target_dir'." >&2
 			rm -f -- "${tmps[@]}" "${dir_tmps[@]}" || true
@@ -495,6 +677,10 @@ refresh_backup() {
 	if [ -z "${path:-}" ]; then
 		echo "No path selected. Exiting storage refresh."
 		return 1
+	fi
+
+	if [ -n "$RSYNC_META_WARNING" ]; then
+		printf "\n\033[1;33m%s\033[0m\n" "$RSYNC_META_WARNING" >&2
 	fi
 
 	local confirm
@@ -568,9 +754,12 @@ if [ "${#DISKS[@]}" -lt 2 ]; then
 	exit 1
 fi
 
+scan_interrupted_refreshes
+
 get_common_top_level_items PATHS "${DISKS[@]}"
 
 remove_dot_items_inplace PATHS
+remove_leftover_items_inplace PATHS
 
 if [ "${#PATHS[@]}" -eq 0 ]; then
 	echo "Error: No common backup folders found."

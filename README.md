@@ -33,7 +33,7 @@ The script scans for mounted volumes, finds backup folders common to all of them
 
 *   **Verify** — Compares file trees across disks, then computes and cross-checks SHA-256 checksums for every file. Use this for a full integrity audit.
 *   **Verify Tree** — Compares file/folder listings across disks only (no checksums). Faster; use this for a quick structural sanity check.
-*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes. Requires free space equal to the size of the backup, since the new copy is written alongside the original before being swapped in; the operation refuses to start if the volume is too full.
+*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes. Requires free space equal to the size of the backup, since the new copy is written alongside the original before being swapped in; the operation refuses to start if the volume is too full. Extended attributes (Finder tags, resource forks) and ACLs are preserved; if the installed `rsync` cannot preserve them, Refresh warns before touching anything.
 *   **Exit** — Quits the script.
 
 > **Run Verify before Refresh.** Refresh rewrites whatever bits it reads — it does not repair anything. Auditing first means you find any corruption while you still have a known-good copy on another disk to restore from.
@@ -45,7 +45,7 @@ The script scans for mounted volumes, finds backup folders common to all of them
 *   **Bash:** Version 5.0 or higher
 *   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `du`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
 *   **Additional dependencies (not always preinstalled, especially on minimal/Lite images):**
-    *   `rsync` — used for the atomic storage refresh
+    *   `rsync` — used for the atomic storage refresh. Metadata flags are detected at startup: GNU rsync uses `--xattrs`/`--acls`, while openrsync (shipped as `rsync` on macOS Sequoia and later) uses `--extended-attributes`, which covers both.
     *   `perl` — used to normalize file paths during comparison
     *   `shasum` (macOS) or `sha256sum` (Linux) — used for checksum verification
 
@@ -55,13 +55,21 @@ The script scans for mounted volumes, finds backup folders common to all of them
 
 The **Refresh** operation rewrites backup contents by rsyncing to a sibling `<path>.refreshing` directory, then swapping it into place via `mv`. If the process is killed or the system loses power during the brief window between the two `mv` calls, `<path>` may momentarily not exist, leaving `<path>.old` (the original) and/or `<path>.refreshing` (the new copy) behind instead.
 
-This is **not silent data loss** — both copies remain on disk — but it does require manual recovery:
+This is **not silent data loss** — both copies remain on disk — and the script detects it for you. On startup it scans every mounted volume for leftover `.old`/`.refreshing` siblings and prints, per affected path, which of the three files exist and the exact command to recover:
 
-1. Check for `<path>.old` and `<path>.refreshing` next to the expected backup path.
-2. If `<path>` is missing, restore it from `<path>.old` (the pre-refresh original) with `mv`.
-3. Once you've confirmed the recovered path is intact, remove the leftover `.old`/`.refreshing` directory.
+```
+⚠ Possible interrupted refresh: 1 path(s) with leftover copies.
 
-Always verify backups with **Verify** or **Verify Tree** after recovering from an interrupted refresh.
+  /Volumes/Backup1/Docs
+    itself:        MISSING
+    .old:          present
+    .refreshing:   absent
+    → Restore the pre-refresh original: mv /Volumes/Backup1/Docs.old /Volumes/Backup1/Docs
+```
+
+This scan is deliberately independent of the backup menu. A path missing from even one disk is no longer common to all of them, so it drops out of the menu entirely — meaning the state most in need of attention would otherwise be the one you could not see. Detected leftovers are also withheld from the menu, so a `.old` copy is never itself offered as a backup to verify or refresh.
+
+Recovery is still manual, since only you can judge which copy to keep. Always verify with **Verify** or **Verify Tree** afterwards.
 
 ---
 
