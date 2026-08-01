@@ -45,7 +45,7 @@ The script scans for mounted volumes, finds backup folders common to all of them
 *   **Bash:** Version 5.0 or higher
 *   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `du`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
 *   **Additional dependencies (not always preinstalled, especially on minimal/Lite images):**
-    *   `rsync` — used for the atomic storage refresh. Metadata flags are detected at startup: GNU rsync uses `--xattrs`/`--acls`, while openrsync (shipped as `rsync` on macOS Sequoia and later) uses `--extended-attributes`, which covers both.
+    *   `rsync` — used for the atomic storage refresh. Metadata flags are detected at startup: GNU rsync uses `--xattrs`/`--acls`, while openrsync (shipped as `rsync` on macOS Sequoia and later) uses `--extended-attributes`, which covers both. Note: openrsync aborts the entire Refresh on a single per-file error (e.g. a permission-denied read) instead of skipping it and continuing; on macOS, installing rsync via Homebrew (`brew install rsync`) and keeping it ahead of `/usr/bin/rsync` in `PATH` avoids this.
     *   `perl` — used to normalize file paths during comparison
     *   `shasum` (macOS) or `sha256sum` (Linux) — used for checksum verification
 
