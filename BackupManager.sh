@@ -47,20 +47,29 @@ unset rsync_version_output
 declare -a RSYNC_META=()
 RSYNC_META_WARNING=""
 
-rsync_help="$(rsync --help 2>&1 || true)"
-if [[ "$rsync_help" == *--xattrs* ]]; then
+rsync_supports() {
+	rsync "$1" --version >/dev/null 2>&1
+}
+
+if rsync_supports --xattrs; then
 	RSYNC_META=(--xattrs)
-	[[ "$rsync_help" == *--acls* ]] && RSYNC_META+=(--acls)
+	rsync_supports --acls && RSYNC_META+=(--acls)
 else
 	RSYNC_META_WARNING="Warning: this rsync build supports neither --xattrs nor --acls."$'\n'"Refresh will discard extended attributes, Finder tags, and ACLs."
 fi
-[[ "$rsync_help" == *--crtimes* ]] && RSYNC_META+=(--crtimes)
-[[ "$rsync_help" == *--fileflags* ]] && RSYNC_META+=(--fileflags)
-if [[ "$OSTYPE" == "darwin"* && "$rsync_help" != *--crtimes* ]]; then
+
+crtimes_supported=0
+rsync_supports --crtimes && {
+	RSYNC_META+=(--crtimes)
+	crtimes_supported=1
+}
+rsync_supports --fileflags && RSYNC_META+=(--fileflags)
+
+if [[ "$OSTYPE" == "darwin"* && "$crtimes_supported" -eq 0 ]]; then
 	[ -n "$RSYNC_META_WARNING" ] && RSYNC_META_WARNING+=$'\n'
 	RSYNC_META_WARNING+="Warning: this rsync build lacks --crtimes; refresh will not preserve creation dates."
 fi
-unset rsync_help
+unset crtimes_supported
 
 readonly RSYNC_META_WARNING
 
