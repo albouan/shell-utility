@@ -1,5 +1,7 @@
 # BackupManager.sh
 
+**Version:** 26.8
+
 A robust, multi-disk backup verification and maintenance utility designed for **macOS** and **Linux (Debian/Raspberry Pi OS)**. It ensures file integrity across multiple storage volumes by performing fast tree comparisons and deep cryptographic checksum validations.
 
 ---

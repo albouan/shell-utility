@@ -59,7 +59,7 @@ unset rsync_help
 readonly RSYNC_META_WARNING
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.08.02"
+readonly SCRIPT_VERSION="26.8"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'
