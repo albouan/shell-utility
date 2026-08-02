@@ -793,8 +793,8 @@ refresh_storage_impl() {
 
 print_version() {
 	local shname="bash"
-	local shver="v${BASH_VERSION%%-*}"
-	printf '%s v%s\nRunning on %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$shname" "$shver"
+	local shver="version ${BASH_VERSION%%-*}"
+	printf '%s version %s\nRunning on %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$shname" "$shver"
 }
 
 print_version
