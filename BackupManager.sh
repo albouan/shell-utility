@@ -5,7 +5,7 @@
 # Description:     Verify the integrity of backup files across multiple disks
 # Target OS:       macOS (Sonoma/Sequoia+) / Raspberry Pi OS (Debian Bookworm+)
 # Compatibility:   macOS (Darwin) & Linux (ARM/Debian-based)
-# Requirements:    Bash 5.0+
+# Requirements:    Bash 5.0+, GNU rsync
 # ==============================================================================
 
 set -euo pipefail
@@ -33,6 +33,17 @@ for cmd in find diff rsync perl sort awk du df mktemp wc tr grep date "${hash_cm
 	require "$cmd"
 done
 
+rsync_version_output="$(rsync --version 2>&1 || true)"
+if ! [[ "$rsync_version_output" =~ ^rsync[[:space:]]+version[[:space:]] ]]; then
+	echo "Error: This script requires GNU rsync; openrsync/BSD rsync is not supported." >&2
+	echo "Detected: $(printf '%s' "$rsync_version_output" | head -n1)" >&2
+	if [[ "$OSTYPE" == "darwin"* ]]; then
+		echo "On macOS, install it with: brew install rsync (keep it ahead of /usr/bin/rsync in PATH)." >&2
+	fi
+	exit 1
+fi
+unset rsync_version_output
+
 declare -a RSYNC_META=()
 RSYNC_META_WARNING=""
 
@@ -40,17 +51,15 @@ rsync_help="$(rsync --help 2>&1 || true)"
 if [[ "$rsync_help" == *--xattrs* ]]; then
 	RSYNC_META=(--xattrs)
 	[[ "$rsync_help" == *--acls* ]] && RSYNC_META+=(--acls)
-elif [[ "$rsync_help" == *--extended-attributes* ]]; then
-	RSYNC_META=(--extended-attributes)
 else
-	RSYNC_META_WARNING="Warning: this rsync supports neither --xattrs nor --extended-attributes."$'\n'"Refresh will discard extended attributes, Finder tags, and ACLs."
+	RSYNC_META_WARNING="Warning: this rsync build supports neither --xattrs nor --acls."$'\n'"Refresh will discard extended attributes, Finder tags, and ACLs."
 fi
 unset rsync_help
 
 readonly RSYNC_META_WARNING
 
 readonly SCRIPT_NAME="Backup Manager"
-readonly SCRIPT_VERSION="2026.08.01"
+readonly SCRIPT_VERSION="2026.08.02"
 
 readonly FIND_FILTER=(
 	! -name '.DS_Store'

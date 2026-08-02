@@ -8,7 +8,7 @@ A robust, multi-disk backup verification and maintenance utility designed for **
 
 *   **Multi-Disk Integrity Checks:** Automatically detects mounted backup volumes and cross-references files across multiple disks.
 *   **Cryptographic Verification:** Uses `sha256sum` (Linux) or `shasum` (macOS) to guarantee data isn't corrupted.
-*   **Atomic Storage Refresh:** Safely rewrites or refreshes storage contents using temporary directories and `rsync` to prevent partial-write data corruption if interrupted.
+*   **Atomic Storage Refresh:** Safely rewrites or refreshes storage contents using temporary directories and GNU `rsync` to prevent partial-write data corruption if interrupted.
 *   **Smart Filtering:** Automatically ignores system noise and temporary metadata files like `.DS_Store`, `._*`, `Thumbs.db`, and backup temp files.
 *   **Parallel Processing:** Leverages background jobs for hashing and syncing across separate disks to speed up performance on multi-core systems.
 
@@ -33,7 +33,7 @@ The script scans for mounted volumes, finds backup folders common to all of them
 
 *   **Verify** — Compares file trees across disks, then computes and cross-checks SHA-256 checksums for every file. Use this for a full integrity audit.
 *   **Verify Tree** — Compares file/folder listings across disks only (no checksums). Faster; use this for a quick structural sanity check.
-*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes. Requires free space equal to the size of the backup, since the new copy is written alongside the original before being swapped in; the operation refuses to start if the volume is too full. Extended attributes (Finder tags, resource forks) and ACLs are preserved; if the installed `rsync` cannot preserve them, Refresh warns before touching anything.
+*   **Refresh** — Atomically rewrites the backup contents on all disks (see [Refresh Interruption & Recovery](#-refresh-interruption--recovery)). Prompts for confirmation before making changes. Requires free space equal to the size of the backup, since the new copy is written alongside the original before being swapped in; the operation refuses to start if the volume is too full. Extended attributes (Finder tags, resource forks) and ACLs are preserved; if the installed GNU rsync build cannot preserve them, Refresh warns before touching anything.
 *   **Exit** — Quits the script.
 
 > **Run Verify before Refresh.** Refresh rewrites whatever bits it reads — it does not repair anything. Auditing first means you find any corruption while you still have a known-good copy on another disk to restore from.
@@ -43,9 +43,9 @@ The script scans for mounted volumes, finds backup folders common to all of them
 ## 📋 Requirements
 
 *   **Bash:** Version 5.0 or higher
+*   **rsync:** GNU rsync (not openrsync/BSD rsync). The script checks the `rsync --version` banner at startup and refuses to run otherwise, since openrsync — shipped as `/usr/bin/rsync` on macOS Sequoia and later — aborts the entire Refresh on a single per-file error (e.g. a permission-denied read) instead of skipping it and continuing. On macOS, install GNU rsync via Homebrew (`brew install rsync`) and keep it ahead of `/usr/bin/rsync` in `PATH`. Metadata flags are also detected at startup: if the installed GNU rsync build lacks `--xattrs`/`--acls` support, Refresh warns before touching anything.
 *   **Core Utilities:** `find`, `diff`, `sort`, `awk`, `du`, `df`, `mktemp`, `wc`, `tr`, `grep`, `date`
 *   **Additional dependencies (not always preinstalled, especially on minimal/Lite images):**
-    *   `rsync` — used for the atomic storage refresh. Metadata flags are detected at startup: GNU rsync uses `--xattrs`/`--acls`, while openrsync (shipped as `rsync` on macOS Sequoia and later) uses `--extended-attributes`, which covers both. Note: openrsync aborts the entire Refresh on a single per-file error (e.g. a permission-denied read) instead of skipping it and continuing; on macOS, installing rsync via Homebrew (`brew install rsync`) and keeping it ahead of `/usr/bin/rsync` in `PATH` avoids this.
     *   `perl` — used to normalize file paths during comparison
     *   `shasum` (macOS) or `sha256sum` (Linux) — used for checksum verification
 
