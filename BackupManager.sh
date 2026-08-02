@@ -797,12 +797,8 @@ refresh_storage_impl() {
 	printf "\nRefreshing %s storage contents completed in %s.\n" "$1" "$(format_duration "$(($(date +%s) - start_s))")"
 }
 
-print_version() {
-	printf '%s version %s\nRunning on bash version %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "${BASH_VERSION%%-*}"
-}
-
-print_version
-echo ""
+printf '%s version %s\nRunning on bash version %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "${BASH_VERSION%%-*}"
+printf '\n'
 
 get_mounted_backup_volumes DISKS
 
